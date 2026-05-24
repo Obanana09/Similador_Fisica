@@ -35,6 +35,10 @@ function resizeCanvas() {
 function setMotion(type) {
   currentMotion = type;
   resetSim();
+  if (camState.active) {
+    clearMeasurePoints();
+    updateCamHints();
+  }
 
   document.querySelectorAll('.motion-tab').forEach(t => t.classList.remove('active'));
   document.getElementById('tab-'+type).classList.add('active');
@@ -755,6 +759,635 @@ function buildValidation() {
     </tr>`;
   });
   document.getElementById('valid-tbody').innerHTML = rows;
+}
+
+// ==================== CAMERA MODE ====================
+const camState = {
+  active: false,
+  stream: null,
+  video: document.getElementById('camVideo'),
+  animFrameId: null,
+  calibMode: false,
+  calibPoints: [],
+  pxPerMeter: null,
+  measuring: false,
+  measurePoints: [],
+  lastAnalysis: null,
+};
+
+function toggleCamera() {
+  if (camState.active) {
+    stopCamera();
+  } else {
+    startCamera();
+  }
+}
+
+async function startCamera() {
+  try {
+    camState.stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    camState.video.srcObject = camState.stream;
+    await camState.video.play();
+  } catch (e) {
+    alert('No se pudo acceder a la cámara: ' + e.message);
+    return;
+  }
+
+  camState.active = true;
+  camState.calibMode = false;
+  camState.calibPoints = [];
+  camState.pxPerMeter = null;
+  camState.measuring = false;
+  camState.measurePoints = [];
+
+  // Pause any running simulation
+  if (simRunning) resetSim();
+
+  document.getElementById('btn-cam').classList.add('cam-active');
+  document.getElementById('btn-cam').textContent = '⏹ Cámara';
+  document.getElementById('cam-panel').style.display = 'block';
+  document.getElementById('btn-measure').disabled = true;
+  resetCamUI();
+
+  canvas.addEventListener('click', handleCamClick);
+  startCamLoop();
+}
+
+function stopCamera() {
+  camState.active = false;
+  camState.calibMode = false;
+  camState.measuring = false;
+
+  if (camState.animFrameId) {
+    cancelAnimationFrame(camState.animFrameId);
+    camState.animFrameId = null;
+  }
+  if (camState.stream) {
+    camState.stream.getTracks().forEach(t => t.stop());
+    camState.stream = null;
+  }
+
+  canvas.removeEventListener('click', handleCamClick);
+
+  document.getElementById('btn-cam').classList.remove('cam-active');
+  document.getElementById('btn-cam').textContent = '📷 Cámara';
+  document.getElementById('cam-panel').style.display = 'none';
+
+  drawIdleCanvas();
+}
+
+function startCamLoop() {
+  function loop() {
+    if (!camState.active) return;
+    drawCameraFrame();
+    camState.animFrameId = requestAnimationFrame(loop);
+  }
+  camState.animFrameId = requestAnimationFrame(loop);
+}
+
+function drawCameraFrame() {
+  const W = canvas.width, H = canvas.height;
+  ctx.drawImage(camState.video, 0, 0, W, H);
+
+  drawCalibOverlay();
+  drawMeasureOverlay();
+
+  // Status indicator
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(8, 8, 130, 22);
+  ctx.fillStyle = '#ef4444';
+  ctx.beginPath(); ctx.arc(20, 19, 5, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '11px JetBrains Mono';
+  ctx.fillText('LIVE', 30, 23);
+
+  if (camState.calibMode) {
+    const remaining = 2 - camState.calibPoints.length;
+    ctx.fillStyle = 'rgba(245,158,11,0.85)';
+    ctx.fillRect(8, 34, 200, 22);
+    ctx.fillStyle = '#000';
+    ctx.font = 'bold 11px Space Grotesk';
+    ctx.fillText(remaining === 2 ? 'Haz clic en punto A' : 'Haz clic en punto B', 14, 50);
+  }
+
+  if (camState.measuring) {
+    ctx.fillStyle = 'rgba(34,211,160,0.85)';
+    ctx.fillRect(8, 34, 200, 22);
+    ctx.fillStyle = '#000';
+    ctx.font = 'bold 11px Space Grotesk';
+    ctx.fillText('Midiendo — haz clic en el objeto', 14, 50);
+  }
+}
+
+function drawCalibOverlay() {
+  const pts = camState.calibPoints;
+  if (pts.length === 0) return;
+
+  const ax = pts[0].x;
+  const ay = pts[0].y;
+  drawPoint(ax, ay, '#fbbf24', 'A');
+
+  if (pts.length === 2) {
+    const bx = pts[1].x;
+    const by = pts[1].y;
+    drawPoint(bx, by, '#60a5fa', 'B');
+
+    // Line A-B
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Distance label at midpoint
+    const mx = (ax + bx) / 2, my = (ay + by) / 2 - 10;
+    const distCm = parseFloat(document.getElementById('cam-real-dist').value) || 50;
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.fillRect(mx - 28, my - 12, 56, 17);
+    ctx.fillStyle = '#22d3a0';
+    ctx.font = 'bold 11px JetBrains Mono';
+    ctx.textAlign = 'center';
+    ctx.fillText(distCm + ' cm', mx, my);
+    ctx.textAlign = 'left';
+  }
+}
+
+function drawMeasureOverlay() {
+  const pts = camState.measurePoints;
+  if (pts.length === 0) return;
+
+  const colors = ['#f87171','#fb923c','#fbbf24','#a3e635','#34d399','#22d3ee','#60a5fa','#a78bfa','#f472b6'];
+  const ppm = camState.pxPerMeter;
+
+  // Draw fitted curve first (behind the click points)
+  if (pts.length >= 3 && ppm && camState.lastAnalysis) {
+    const r = camState.lastAnalysis;
+    const τmax = (pts[pts.length-1].t - pts[0].t) / 1000;
+    const steps = 60;
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 3]);
+    ctx.beginPath();
+    let started = false;
+
+    for (let i = 0; i <= steps; i++) {
+      const τ = τmax * i / steps;
+      let cx, cy;
+
+      if (r.type === 'MRUV') {
+        const s_m = r.fit.a*τ*τ + r.fit.b*τ + r.fit.c;
+        const s_px = s_m * ppm;
+        cx = pts[0].x + r.ux * s_px;
+        cy = pts[0].y + r.uy * s_px;
+      } else if (r.type === 'CAIDA') {
+        const h_m = r.fit.a*τ*τ + r.fit.b*τ + r.fit.c;
+        cx = pts[0].x;
+        cy = pts[0].y + h_m * ppm;
+      } else if (r.type === 'PARABOLICO') {
+        const x_m = r.fitX.a*τ + r.fitX.b;
+        const y_m = r.fitY.a*τ*τ + r.fitY.b*τ + r.fitY.c;
+        cx = pts[0].x + x_m * ppm;
+        cy = pts[0].y + y_m * ppm;
+      } else {
+        break; // MRU: no curve needed, line from first to last suffices
+      }
+
+      started ? ctx.lineTo(cx, cy) : (ctx.moveTo(cx, cy), started = true);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // Draw connecting lines and points
+  for (let i = 0; i < pts.length; i++) {
+    const px = pts[i].x, py = pts[i].y;
+    const col = colors[i % colors.length];
+
+    if (i > 0) {
+      const px0 = pts[i-1].x, py0 = pts[i-1].y;
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath(); ctx.moveTo(px0, py0); ctx.lineTo(px, py); ctx.stroke();
+      ctx.setLineDash([]);
+
+      if (ppm && currentMotion === 'MRU') {
+        const v = segmentSpeed(pts[i-1], pts[i]);
+        const mx = (px0 + px) / 2, my = (py0 + py) / 2 - 8;
+        ctx.fillStyle = 'rgba(0,0,0,0.65)';
+        ctx.fillRect(mx - 24, my - 11, 52, 15);
+        ctx.fillStyle = col;
+        ctx.font = 'bold 10px JetBrains Mono';
+        ctx.textAlign = 'center';
+        ctx.fillText(v.toFixed(2) + ' m/s', mx, my);
+        ctx.textAlign = 'left';
+      }
+    }
+
+    drawPoint(px, py, col, String(i + 1));
+  }
+}
+
+function drawPoint(x, y, color, label) {
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#000';
+  ctx.font = 'bold 10px Space Grotesk';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, x, y);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+}
+
+function handleCamClick(e) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const x = (e.clientX - rect.left) * scaleX;
+  const y = (e.clientY - rect.top) * scaleY;
+
+  if (camState.calibMode) {
+    camState.calibPoints.push({ x, y });
+    updateCalibUI();
+    if (camState.calibPoints.length >= 2) {
+      camState.calibMode = false;
+      finalizeCalibration();
+    }
+    return;
+  }
+
+  if (camState.measuring) {
+    camState.measurePoints.push({ x, y, t: Date.now() });
+    updateMeasureResults();
+  }
+}
+
+function startCalibration() {
+  if (!camState.active) return;
+  camState.calibMode = true;
+  camState.calibPoints = [];
+  camState.pxPerMeter = null;
+  document.getElementById('btn-measure').disabled = true;
+  updateCalibUI();
+}
+
+function finalizeCalibration() {
+  const pts = camState.calibPoints;
+  const dx = pts[1].x - pts[0].x;
+  const dy = pts[1].y - pts[0].y;
+  const distPx = Math.sqrt(dx * dx + dy * dy);
+  const distCm = parseFloat(document.getElementById('cam-real-dist').value) || 50;
+  const distM = distCm / 100;
+  camState.pxPerMeter = distPx / distM;
+
+  const scaleEl = document.getElementById('cam-scale-text');
+  scaleEl.textContent = 'Escala: ' + camState.pxPerMeter.toFixed(1) + ' px/m';
+  scaleEl.className = 'cam-scale-text scale-ready';
+
+  document.getElementById('btn-measure').disabled = false;
+  updateCalibUI();
+}
+
+function updateCalibUI() {
+  const pts = camState.calibPoints;
+  const aLbl = document.getElementById('cam-pt-a-lbl');
+  const bLbl = document.getElementById('cam-pt-b-lbl');
+
+  if (pts.length === 0) {
+    aLbl.textContent = 'A: sin marcar';
+    aLbl.className = 'cam-point-label point-a';
+    bLbl.textContent = 'B: sin marcar';
+    bLbl.className = 'cam-point-label point-b';
+  } else if (pts.length === 1) {
+    aLbl.textContent = 'A: ✓ marcado';
+    aLbl.className = 'cam-point-label point-done';
+    bLbl.textContent = 'B: en espera…';
+    bLbl.className = 'cam-point-label point-b';
+  } else {
+    aLbl.textContent = 'A: ✓ marcado';
+    aLbl.className = 'cam-point-label point-done';
+    bLbl.textContent = 'B: ✓ marcado';
+    bLbl.className = 'cam-point-label point-done';
+  }
+}
+
+function toggleMeasure() {
+  if (!camState.pxPerMeter) return;
+  camState.measuring = !camState.measuring;
+  const btn = document.getElementById('btn-measure');
+  btn.textContent = camState.measuring ? '■ Detener' : '▶ Iniciar medición';
+  btn.style.borderColor = camState.measuring ? 'rgba(248,113,113,0.5)' : '';
+  btn.style.color = camState.measuring ? 'var(--coral)' : '';
+}
+
+function clearMeasurePoints() {
+  camState.measurePoints = [];
+  camState.lastAnalysis = null;
+  camState.measuring = false;
+  const btn = document.getElementById('btn-measure');
+  btn.textContent = '▶ Iniciar medición';
+  btn.style.borderColor = '';
+  btn.style.color = '';
+  const minPts = { MRU: 2, MRUV: 3, CAIDA: 3, PARABOLICO: 3 };
+  document.getElementById('cam-point-count').textContent =
+    `Puntos: 0 (mín. ${minPts[currentMotion] || 2})`;
+  document.getElementById('cam-result-box').innerHTML =
+    '<div style="font-size:11px;color:var(--text3)">Sin datos</div>';
+  clearCharts();
+}
+
+function segmentSpeed(p1, p2) {
+  const dx = p2.x - p1.x;
+  const dy = p2.y - p1.y;
+  const distPx = Math.sqrt(dx * dx + dy * dy);
+  const distM = distPx / camState.pxPerMeter;
+  const dt = (p2.t - p1.t) / 1000;
+  return dt > 0 ? distM / dt : 0;
+}
+
+function updateMeasureResults() {
+  const pts = camState.measurePoints;
+  const minPts = { MRU: 2, MRUV: 3, CAIDA: 3, PARABOLICO: 3 };
+  const needed = minPts[currentMotion] || 2;
+  document.getElementById('cam-point-count').textContent =
+    `Puntos: ${pts.length} (mín. ${needed})`;
+  renderCamResults(pts);
+}
+
+// ---- Math helpers ----
+function solve3x3(A, b) {
+  const M = A.map((row, i) => [...row, b[i]]);
+  for (let col = 0; col < 3; col++) {
+    let maxRow = col;
+    for (let row = col + 1; row < 3; row++)
+      if (Math.abs(M[row][col]) > Math.abs(M[maxRow][col])) maxRow = row;
+    [M[col], M[maxRow]] = [M[maxRow], M[col]];
+    if (Math.abs(M[col][col]) < 1e-12) continue;
+    for (let row = col + 1; row < 3; row++) {
+      const f = M[row][col] / M[col][col];
+      for (let k = col; k <= 3; k++) M[row][k] -= f * M[col][k];
+    }
+  }
+  const x = [0, 0, 0];
+  for (let i = 2; i >= 0; i--) {
+    x[i] = M[i][3];
+    for (let j = i + 1; j < 3; j++) x[i] -= M[i][j] * x[j];
+    x[i] /= M[i][i] || 1;
+  }
+  return x;
+}
+
+function fitLinear(ts, xs) {
+  const n = ts.length, t0 = ts[0];
+  const τ = ts.map(t => t - t0);
+  let s1 = 0, s2 = 0, sx = 0, stx = 0;
+  for (let i = 0; i < n; i++) { s1 += τ[i]; s2 += τ[i]*τ[i]; sx += xs[i]; stx += τ[i]*xs[i]; }
+  const det = s2*n - s1*s1;
+  if (Math.abs(det) < 1e-12) return { a: 0, b: sx / n, r2: 0 };
+  const a = (stx*n - sx*s1) / det;
+  const b = (s2*sx - s1*stx) / det;
+  const mean = sx / n;
+  let ss_res = 0, ss_tot = 0;
+  for (let i = 0; i < n; i++) {
+    ss_res += (xs[i] - (a*τ[i] + b)) ** 2;
+    ss_tot += (xs[i] - mean) ** 2;
+  }
+  return { a, b, r2: ss_tot > 0 ? 1 - ss_res / ss_tot : 1 };
+}
+
+function fitQuadratic(ts, xs) {
+  const n = ts.length, t0 = ts[0];
+  const τ = ts.map(t => t - t0);
+  let s1=0,s2=0,s3=0,s4=0, sx=0,st1x=0,st2x=0;
+  for (let i = 0; i < n; i++) {
+    const t=τ[i], x=xs[i];
+    s1+=t; s2+=t*t; s3+=t*t*t; s4+=t*t*t*t;
+    sx+=x; st1x+=t*x; st2x+=t*t*x;
+  }
+  const [qa, qb, qc] = solve3x3([[s4,s3,s2],[s3,s2,s1],[s2,s1,n]], [st2x,st1x,sx]);
+  const mean = sx / n;
+  let ss_res = 0, ss_tot = 0;
+  for (let i = 0; i < n; i++) {
+    ss_res += (xs[i] - (qa*τ[i]*τ[i] + qb*τ[i] + qc)) ** 2;
+    ss_tot += (xs[i] - mean) ** 2;
+  }
+  return { a: qa, b: qb, c: qc, r2: ss_tot > 0 ? 1 - ss_res / ss_tot : 1 };
+}
+
+// ---- Analysis per motion type ----
+function getTimesSeconds(pts) {
+  return pts.map(p => (p.t - pts[0].t) / 1000);
+}
+
+function analyzeMRU(pts) {
+  const speeds = [];
+  for (let i = 1; i < pts.length; i++) speeds.push(segmentSpeed(pts[i-1], pts[i]));
+  const mean = speeds.reduce((a,b)=>a+b,0) / speeds.length;
+  const variance = speeds.reduce((a,b)=>a+(b-mean)**2,0) / speeds.length;
+  const cv = mean > 0 ? Math.sqrt(variance) / mean * 100 : 0;
+  return { speeds, mean, cv };
+}
+
+function analyzeMRUV(pts) {
+  const τ = getTimesSeconds(pts);
+  // Project onto dominant direction (first → last)
+  const dx = pts[pts.length-1].x - pts[0].x;
+  const dy = pts[pts.length-1].y - pts[0].y;
+  const len = Math.sqrt(dx*dx + dy*dy) || 1;
+  const ux = dx/len, uy = dy/len;
+  const s = pts.map(p => {
+    const px = p.x - pts[0].x, py = p.y - pts[0].y;
+    return (px*ux + py*uy) / camState.pxPerMeter; // meters along direction
+  });
+  const fit = fitQuadratic(τ, s);
+  return {
+    accel: 2 * fit.a,         // m/s²
+    v0: fit.b,                // m/s
+    r2: fit.r2,
+    fit, τ, s,
+    ux, uy                    // direction unit vector (canvas pixels)
+  };
+}
+
+function analyzeCAIDA(pts) {
+  const τ = getTimesSeconds(pts);
+  // Use vertical component (canvas Y increases downward = falling)
+  const h = pts.map(p => (p.y - pts[0].y) / camState.pxPerMeter); // meters fallen
+  const fit = fitQuadratic(τ, h);
+  const g_meas = 2 * fit.a;
+  const g_err = Math.abs((g_meas - 9.8) / 9.8 * 100);
+  return { g_meas, v0: fit.b, r2: fit.r2, g_err, fit, τ, h };
+}
+
+function analyzePARABOLICO(pts) {
+  const τ = getTimesSeconds(pts);
+  const px = pts.map(p => (p.x - pts[0].x) / camState.pxPerMeter); // m horizontal
+  const py = pts.map(p => (p.y - pts[0].y) / camState.pxPerMeter); // m vertical (down+)
+  const fitX = fitLinear(τ, px);
+  const fitY = fitQuadratic(τ, py);
+  const vx = fitX.a;               // m/s horizontal
+  const vy0_canvas = fitY.b;       // m/s downward initial (canvas direction)
+  // In physics vy0 is upward: if fitY.b < 0 object was going up initially
+  const vy0_phys = -fitY.b;        // upward initial vertical speed
+  const g_meas = 2 * fitY.a;       // m/s²
+  const g_err = Math.abs((g_meas - 9.8) / 9.8 * 100);
+  const v0 = Math.sqrt(vx*vx + vy0_phys*vy0_phys);
+  const theta = Math.atan2(vy0_phys, vx) * 180 / Math.PI;
+  return { vx, vy0: vy0_phys, g_meas, g_err, r2x: fitX.r2, r2y: fitY.r2, v0, theta, fitX, fitY, τ, px, py };
+}
+
+// ---- Results rendering ----
+function camParamHTML(label, value, cls='') {
+  return `<div class="cam-param"><div class="cam-param-label">${label}</div><div class="cam-param-val ${cls}">${value}</div></div>`;
+}
+
+function renderCamResults(pts) {
+  const box = document.getElementById('cam-result-box');
+  const minPts = { MRU: 2, MRUV: 3, CAIDA: 3, PARABOLICO: 3 };
+  const needed = minPts[currentMotion] || 2;
+  if (pts.length < needed) {
+    box.innerHTML = `<div style="font-size:11px;color:var(--text3)">Se necesitan ≥${needed} puntos</div>`;
+    return;
+  }
+
+  let html = '';
+  let chartData = null;
+
+  switch (currentMotion) {
+    case 'MRU': {
+      const r = analyzeMRU(pts);
+      camState.lastAnalysis = { type: 'MRU', ...r };
+      const badge = r.speeds.length < 2
+        ? ['mru-none', 'Se necesitan ≥3 puntos']
+        : r.cv < 15
+          ? ['mru-ok', `✓ MRU confirmado — CV: ${r.cv.toFixed(1)}%`]
+          : ['mru-warn', `⚠ No uniforme — CV: ${r.cv.toFixed(1)}%`];
+      html = `
+        <div class="cam-result-speed">${r.mean.toFixed(3)}<span>m/s</span></div>
+        <div class="cam-result-mru ${badge[0]}">${badge[1]}</div>
+        <div class="cam-result-segments">${r.speeds.map((v,i)=>`<span>${i+1}→${i+2}: ${v.toFixed(3)} m/s</span>`).join('')}</div>`;
+      chartData = {
+        vel: { labels: r.speeds.map((_,i)=>(i+1).toString()), data: r.speeds },
+      };
+      break;
+    }
+    case 'MRUV': {
+      const r = analyzeMRUV(pts);
+      camState.lastAnalysis = { type: 'MRUV', ...r };
+      const fitOk = r.r2 > 0.9;
+      const aStr = r.accel.toFixed(3);
+      const v0Str = r.v0.toFixed(3);
+      html = `
+        <div class="cam-result-mru ${fitOk?'mru-ok':'mru-warn'}" style="margin-bottom:6px">
+          ${fitOk ? '✓ MRUV confirmado' : '⚠ Ajuste bajo'} — R²: ${r.r2.toFixed(3)}
+        </div>
+        <div class="cam-param-grid">
+          ${camParamHTML('Aceleración (a)', aStr + ' m/s²', fitOk?'good':'warn')}
+          ${camParamHTML('Vel. inicial (v₀)', v0Str + ' m/s', 'cyan')}
+          ${camParamHTML('R² ajuste', r.r2.toFixed(4), fitOk?'good':'warn')}
+          ${camParamHTML('Puntos usados', pts.length)}
+        </div>`;
+      // Build chart data: position (s) vs τ, velocity (ds/dτ = 2aτ+b) vs τ
+      const τDense = r.τ.map((_,i,a)=>a[0]+(a[a.length-1]-a[0])*i/(a.length-1||1));
+      const sData = r.s;
+      const vData = r.τ.map(t => 2*r.fit.a*t + r.fit.b);
+      const aData = r.τ.map(() => r.accel);
+      chartData = {
+        pos: { labels: r.τ.map(t=>t.toFixed(2)), data: sData },
+        vel: { labels: r.τ.map(t=>t.toFixed(2)), data: vData },
+        acc: { labels: r.τ.map(t=>t.toFixed(2)), data: aData },
+      };
+      break;
+    }
+    case 'CAIDA': {
+      const r = analyzeCAIDA(pts);
+      camState.lastAnalysis = { type: 'CAIDA', ...r };
+      const gOk = r.g_err < 25;
+      html = `
+        <div class="cam-result-mru ${gOk?'mru-ok':'mru-warn'}" style="margin-bottom:6px">
+          ${gOk ? '✓ g confirmado' : '⚠ g fuera de rango'} — Error: ${r.g_err.toFixed(1)}%
+        </div>
+        <div class="cam-param-grid">
+          ${camParamHTML('g medido', r.g_meas.toFixed(3) + ' m/s²', gOk?'good':'warn')}
+          ${camParamHTML('g teórico', '9.800 m/s²', 'cyan')}
+          ${camParamHTML('v₀ vertical', r.v0.toFixed(3) + ' m/s')}
+          ${camParamHTML('R² ajuste', r.r2.toFixed(4), r.r2>0.9?'good':'warn')}
+        </div>`;
+      const vData = r.τ.map(t => r.fit.b + 2*r.fit.a*t);
+      chartData = {
+        pos: { labels: r.τ.map(t=>t.toFixed(2)), data: r.h },
+        vel: { labels: r.τ.map(t=>t.toFixed(2)), data: vData },
+        acc: { labels: r.τ.map(t=>t.toFixed(2)), data: r.τ.map(()=>r.g_meas) },
+      };
+      break;
+    }
+    case 'PARABOLICO': {
+      const r = analyzePARABOLICO(pts);
+      camState.lastAnalysis = { type: 'PARABOLICO', ...r };
+      const fitOk = r.r2x > 0.85 && r.r2y > 0.85;
+      const gOk = r.g_err < 30;
+      html = `
+        <div class="cam-result-mru ${fitOk?'mru-ok':'mru-warn'}" style="margin-bottom:6px">
+          ${fitOk ? '✓ Parabólico confirmado' : '⚠ Ajuste bajo'} — R²ₓ:${r.r2x.toFixed(2)} R²ᵧ:${r.r2y.toFixed(2)}
+        </div>
+        <div class="cam-param-grid">
+          ${camParamHTML('vₓ (horiz.)', r.vx.toFixed(3) + ' m/s', 'cyan')}
+          ${camParamHTML('v₀ᵧ (vert.)', r.vy0.toFixed(3) + ' m/s', 'cyan')}
+          ${camParamHTML('g medido', r.g_meas.toFixed(3) + ' m/s²', gOk?'good':'warn')}
+          ${camParamHTML('v₀ total / θ', r.v0.toFixed(2)+'m/s / '+r.theta.toFixed(1)+'°')}
+        </div>`;
+      const vMag = r.τ.map(t => {
+        const vy = r.fitY.b + 2*r.fitY.a*t;
+        return Math.sqrt(r.vx*r.vx + vy*vy);
+      });
+      chartData = {
+        pos: { labels: r.τ.map(t=>t.toFixed(2)), data: r.py.map(y=>-y) }, // flip Y to show height
+        vel: { labels: r.τ.map(t=>t.toFixed(2)), data: vMag },
+        acc: { labels: r.τ.map(t=>t.toFixed(2)), data: r.τ.map(()=>r.g_meas) },
+      };
+      break;
+    }
+  }
+
+  box.innerHTML = html;
+
+  // Update charts
+  if (chartData) {
+    if (chartData.pos) { chartPos.data.labels=chartData.pos.labels; chartPos.data.datasets[0].data=chartData.pos.data; chartPos.update('none'); }
+    if (chartData.vel) { chartVel.data.labels=chartData.vel.labels; chartVel.data.datasets[0].data=chartData.vel.data; chartVel.update('none'); }
+    if (chartData.acc) { chartAcc.data.labels=chartData.acc.labels; chartAcc.data.datasets[0].data=chartData.acc.data; chartAcc.update('none'); }
+  }
+}
+
+function resetCamUI() {
+  document.getElementById('cam-pt-a-lbl').textContent = 'A: sin marcar';
+  document.getElementById('cam-pt-a-lbl').className = 'cam-point-label point-a';
+  document.getElementById('cam-pt-b-lbl').textContent = 'B: sin marcar';
+  document.getElementById('cam-pt-b-lbl').className = 'cam-point-label point-b';
+  const scaleEl = document.getElementById('cam-scale-text');
+  scaleEl.textContent = 'Escala: -- px/m';
+  scaleEl.className = 'cam-scale-text';
+  const minPts = { MRU: 2, MRUV: 3, CAIDA: 3, PARABOLICO: 3 };
+  document.getElementById('cam-point-count').textContent =
+    `Puntos: 0 (mín. ${minPts[currentMotion] || 2})`;
+  document.getElementById('cam-result-box').innerHTML =
+    '<div style="font-size:11px;color:var(--text3)">Sin datos</div>';
+  camState.lastAnalysis = null;
+  updateCamHints();
+}
+
+function updateCamHints() {
+  const el = document.getElementById('cam-measure-hint');
+  if (!el) return;
+  const hints = {
+    MRU: 'Mueve el objeto a velocidad constante. Haz clic en distintos instantes.',
+    MRUV: 'Empuja el objeto para que acelere/desacelere. Necesitas ≥3 puntos.',
+    CAIDA: 'Apunta la cámara de lado. Deja caer el objeto y haz clic en su posición. Necesitas ≥3 puntos.',
+    PARABOLICO: 'Lanza el objeto con ángulo. Haz clic en su trayectoria. Necesitas ≥3 puntos.',
+  };
+  el.textContent = hints[currentMotion] || hints.MRU;
 }
 
 // Run launcher

@@ -131,12 +131,82 @@
             <div class="btn-row">
                 <button class="btn primary" onclick="startSim()">▶ Simular</button>
                 <button class="btn danger" onclick="resetSim()">↺ Reset</button>
+                <button class="btn cam" id="btn-cam" onclick="toggleCamera()">📷 Cámara</button>
             </div>
 
             <hr class="divider">
 
             <div class="section-label">Ecuaciones Activas</div>
             <div id="eq-sidebar" style="display:flex;flex-direction:column;gap:8px;"></div>
+
+            <!-- CAMERA PANEL -->
+            <div id="cam-panel" style="display:none;margin-top:20px;">
+                <div class="section-label" style="color:#22d3ee;">Modo Cámara — MRU Real</div>
+                <div class="cam-panel">
+
+                    <!-- PASO 1: CALIBRACIÓN -->
+                    <div>
+                        <div class="cam-step-header">
+                            <div class="cam-step-num">1</div>
+                            <div class="cam-step-title">Calibración</div>
+                        </div>
+                        <div class="cam-step-body">
+                            <div class="cam-hint">Coloca un objeto de tamaño conocido frente a la cámara (ej. regla).</div>
+                            <div class="cam-input-row">
+                                <label>Distancia real:</label>
+                                <input type="number" class="cam-input" id="cam-real-dist" value="50" min="1" max="10000" step="1">
+                                <span class="cam-input-unit">cm</span>
+                            </div>
+                            <div class="cam-point-row">
+                                <span class="cam-point-label point-a" id="cam-pt-a-lbl">A: sin marcar</span>
+                                <span class="cam-point-label point-b" id="cam-pt-b-lbl">B: sin marcar</span>
+                            </div>
+                            <button class="btn" id="btn-calib" onclick="startCalibration()" style="font-size:12px;padding:7px 10px;">
+                                Marcar puntos A → B
+                            </button>
+                            <div class="cam-scale-text" id="cam-scale-text">Escala: -- px/m</div>
+                        </div>
+                    </div>
+
+                    <div class="cam-separator"></div>
+
+                    <!-- PASO 2: MEDICIÓN -->
+                    <div>
+                        <div class="cam-step-header">
+                            <div class="cam-step-num">2</div>
+                            <div class="cam-step-title">Medición</div>
+                        </div>
+                        <div class="cam-step-body">
+                            <div class="cam-hint" id="cam-measure-hint">Haz clic sobre el objeto en distintos instantes de tiempo.</div>
+                            <div style="display:flex;gap:6px;">
+                                <button class="btn" id="btn-measure" onclick="toggleMeasure()" style="flex:1;font-size:12px;padding:7px 10px;" disabled>
+                                    ▶ Iniciar medición
+                                </button>
+                                <button class="btn danger" onclick="clearMeasurePoints()" style="font-size:12px;padding:7px 10px;">
+                                    🗑
+                                </button>
+                            </div>
+                            <div style="font-size:11px;color:var(--text3);font-family:'JetBrains Mono',monospace;" id="cam-point-count">
+                                Puntos: 0
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="cam-separator"></div>
+
+                    <!-- RESULTADOS -->
+                    <div>
+                        <div class="cam-step-header">
+                            <div class="cam-step-num">3</div>
+                            <div class="cam-step-title">Resultados</div>
+                        </div>
+                        <div class="cam-result-box" id="cam-result-box">
+                            <div style="font-size:11px;color:var(--text3)">Sin datos</div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
         </aside>
 
         <main class="main">
@@ -215,6 +285,7 @@
         </main>
     </div>
 
+    <video id="camVideo" autoplay muted playsinline style="display:none;"></video>
     <script src="script.js"></script>
 </body>
 </html>
