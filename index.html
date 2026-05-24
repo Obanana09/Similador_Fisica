@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulador de Movimiento — Física 1</title>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <header class="header">
+        <div class="header-logo">⚡</div>
+        <h1>Simulador de Movimiento</h1>
+        <span>Física 1 — UMG</span>
+        <div class="badge">Análisis en Tiempo Real</div>
+    </header>
+
+    <div class="layout">
+        <aside class="sidebar">
+            <div class="section-label">Tipo de Movimiento</div>
+            <div class="motion-tabs">
+                <button class="motion-tab active" onclick="setMotion('MRU')" id="tab-MRU">
+                    <div class="tab-icon">→</div>
+                    <div>
+                        <div>MRU</div>
+                        <div style="font-size:11px;color:var(--text3);font-weight:400">Velocidad constante</div>
+                    </div>
+                </button>
+                <button class="motion-tab" onclick="setMotion('MRUV')" id="tab-MRUV">
+                    <div class="tab-icon">⇒</div>
+                    <div>
+                        <div>MRUV</div>
+                        <div style="font-size:11px;color:var(--text3);font-weight:400">Aceleración constante</div>
+                    </div>
+                </button>
+                <button class="motion-tab" onclick="setMotion('CAIDA')" id="tab-CAIDA">
+                    <div class="tab-icon">↓</div>
+                    <div>
+                        <div>Caída Libre</div>
+                        <div style="font-size:11px;color:var(--text3);font-weight:400">g = 9.8 m/s²</div>
+                    </div>
+                </button>
+                <button class="motion-tab" onclick="setMotion('PARABOLICO')" id="tab-PARABOLICO">
+                    <div class="tab-icon">⌒</div>
+                    <div>
+                        <div>Tiro Parabólico</div>
+                        <div style="font-size:11px;color:var(--text3);font-weight:400">Movimiento 2D</div>
+                    </div>
+                </button>
+            </div>
+
+            <hr class="divider">
+
+            <div id="ctrl-MRU">
+                <div class="section-label">Parámetros MRU</div>
+                <div class="control-group">
+                    <div class="control-label"><span>Velocidad (v)</span><span class="control-value" id="v0-mru-val">10 m/s</span></div>
+                    <input type="range" id="v0-mru" min="1" max="50" value="10" step="1" oninput="updateParams()">
+                </div>
+                <div class="control-group">
+                    <div class="control-label"><span>Posición inicial (x₀)</span><span class="control-value" id="x0-mru-val">0 m</span></div>
+                    <input type="range" id="x0-mru" min="0" max="100" value="0" step="1" oninput="updateParams()">
+                </div>
+                <div class="control-group">
+                    <div class="control-label"><span>Duración (t)</span></div>
+                    <input type="number" id="dur-mru" min="1" max="3600" value="10" step="1" oninput="updateParams()" style="width:100%;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius2);color:var(--text);font-family:'JetBrains Mono',monospace;font-size:14px;padding:8px 12px;outline:none;">
+                </div>
+            </div>
+
+            <div id="ctrl-MRUV" style="display:none">
+                <div class="section-label">Parámetros MRUV</div>
+                <div class="control-group">
+                    <div class="control-label"><span>Velocidad inicial (v₀)</span><span class="control-value" id="v0-mruv-val">5 m/s</span></div>
+                    <input type="range" id="v0-mruv" min="0" max="40" value="5" step="1" oninput="updateParams()">
+                </div>
+                <div class="control-group">
+                    <div class="control-label"><span>Aceleración (a)</span><span class="control-value" id="a-mruv-val">3 m/s²</span></div>
+                    <input type="range" id="a-mruv" min="-20" max="20" value="3" step="0.5" oninput="updateParams()">
+                </div>
+                <div class="control-group">
+                    <div class="control-label"><span>Posición inicial (x₀)</span><span class="control-value" id="x0-mruv-val">0 m</span></div>
+                    <input type="range" id="x0-mruv" min="0" max="50" value="0" step="1" oninput="updateParams()">
+                </div>
+                <div class="control-group">
+                    <div class="control-label"><span>Duración (t)</span></div>
+                    <input type="number" id="dur-mruv" min="1" max="3600" value="10" step="1" oninput="updateParams()" style="width:100%;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius2);color:var(--text);font-family:'JetBrains Mono',monospace;font-size:14px;padding:8px 12px;outline:none;">
+                </div>
+            </div>
+
+            <div id="ctrl-CAIDA" style="display:none">
+                <div class="section-label">Parámetros Caída Libre</div>
+                <div class="control-group">
+                    <div class="control-label"><span>Altura inicial (y₀)</span><span class="control-value" id="h0-caida-val">80 m</span></div>
+                    <input type="range" id="h0-caida" min="10" max="200" value="80" step="5" oninput="updateParams()">
+                </div>
+                <div class="control-group">
+                    <div class="control-label"><span>Velocidad inicial (v₀)</span><span class="control-value" id="v0-caida-val">0 m/s</span></div>
+                    <input type="range" id="v0-caida" min="0" max="30" value="0" step="1" oninput="updateParams()">
+                </div>
+                <div class="control-group">
+                    <div class="control-label"><span>Duración (t)</span></div>
+                    <input type="number" id="dur-caida" min="1" max="3600" value="10" step="1" oninput="updateParams()" style="width:100%;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius2);color:var(--text);font-family:'JetBrains Mono',monospace;font-size:14px;padding:8px 12px;outline:none;">
+                </div>
+                <div style="background:rgba(248,113,113,0.08);border:1px solid rgba(248,113,113,0.2);border-radius:8px;padding:10px 12px;font-size:12px;color:var(--coral);">
+                    g = 9.8 m/s² (constante)
+                </div>
+            </div>
+
+            <div id="ctrl-PARABOLICO" style="display:none">
+                <div class="section-label">Parámetros Tiro Parabólico</div>
+                <div class="control-group">
+                    <div class="control-label"><span>Velocidad inicial (v₀)</span><span class="control-value" id="v0-par-val">25 m/s</span></div>
+                    <input type="range" id="v0-par" min="5" max="60" value="25" step="1" oninput="updateParams()">
+                </div>
+                <div class="control-group">
+                    <div class="control-label"><span>Ángulo (θ)</span><span class="control-value" id="ang-par-val">45°</span></div>
+                    <input type="range" id="ang-par" min="5" max="85" value="45" step="1" oninput="updateParams()">
+                </div>
+                <div class="control-group">
+                    <div class="control-label"><span>Altura inicial (y₀)</span><span class="control-value" id="y0-par-val">0 m</span></div>
+                    <input type="range" id="y0-par" min="0" max="50" value="0" step="1" oninput="updateParams()">
+                </div>
+                <div class="control-group">
+                    <div class="control-label"><span>Duración (t)</span></div>
+                    <input type="number" id="dur-par" min="1" max="3600" value="10" step="1" oninput="updateParams()" style="width:100%;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius2);color:var(--text);font-family:'JetBrains Mono',monospace;font-size:14px;padding:8px 12px;outline:none;">
+                </div>
+            </div>
+
+            <div class="btn-row">
+                <button class="btn primary" onclick="startSim()">▶ Simular</button>
+                <button class="btn danger" onclick="resetSim()">↺ Reset</button>
+            </div>
+
+            <hr class="divider">
+
+            <div class="section-label">Ecuaciones Activas</div>
+            <div id="eq-sidebar" style="display:flex;flex-direction:column;gap:8px;"></div>
+        </aside>
+
+        <main class="main">
+            <div class="canvas-card">
+                <div class="canvas-header">
+                    <div>
+                        <div class="canvas-title" id="canvas-title">Movimiento Rectilíneo Uniforme</div>
+                        <div style="font-size:12px;color:var(--text3);margin-top:2px">Animación en tiempo real</div>
+                    </div>
+                    <div class="motion-type-badge" id="motion-badge" style="background:rgba(108,99,255,0.15);border:1px solid rgba(108,99,255,0.3);color:var(--accent2)">MRU</div>
+                </div>
+                <canvas id="simCanvas" height="260"></canvas>
+                <div class="status-bar">
+                    <div class="status-dot" id="status-dot" style="background:var(--text3)"></div>
+                    <span id="status-text">Listo para simular</span>
+                    <span style="margin-left:auto;font-family:'JetBrains Mono',monospace" id="time-display">t = 0.00 s</span>
+                </div>
+            </div>
+
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-label">Posición</div>
+                    <div class="metric-value" style="color:var(--blue)" id="metric-pos">0.00<span class="metric-unit">m</span></div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Velocidad</div>
+                    <div class="metric-value" style="color:var(--green)" id="metric-vel">0.00<span class="metric-unit">m/s</span></div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Aceleración</div>
+                    <div class="metric-value" style="color:var(--amber)" id="metric-acc">0.00<span class="metric-unit">m/s²</span></div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Tiempo</div>
+                    <div class="metric-value" style="color:var(--accent2)" id="metric-time">0.00<span class="metric-unit">s</span></div>
+                </div>
+            </div>
+
+            <div class="charts-grid">
+                <div class="chart-card">
+                    <div class="chart-title">📍 Posición vs Tiempo (x-t)</div>
+                    <div class="chart-wrap"><canvas id="chartPos"></canvas></div>
+                </div>
+                <div class="chart-card">
+                    <div class="chart-title">🏃 Velocidad vs Tiempo (v-t)</div>
+                    <div class="chart-wrap"><canvas id="chartVel"></canvas></div>
+                </div>
+                <div class="chart-card">
+                    <div class="chart-title">⚡ Aceleración vs Tiempo (a-t)</div>
+                    <div class="chart-wrap"><canvas id="chartAcc"></canvas></div>
+                </div>
+            </div>
+
+            <div class="eq-card">
+                <div class="eq-title">Fundamento Físico Aplicado</div>
+                <div class="eq-list" id="eq-list"></div>
+            </div>
+
+            <div class="validation">
+                <div class="validation-header">Validación — Comparación teórica vs simulada</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Instante (t)</th>
+                            <th>Posición teórica</th>
+                            <th>Posición simulada</th>
+                            <th>Error %</th>
+                            <th>Velocidad teórica</th>
+                            <th>Velocidad simulada</th>
+                            <th>Estado</th>
+                        </tr>
+                    </thead>
+                    <tbody id="valid-tbody"></tbody>
+                </table>
+            </div>
+        </main>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
